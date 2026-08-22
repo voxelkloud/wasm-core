@@ -1,0 +1,21 @@
+[package]
+name = "voxelkloud-wasm-core"
+version = "0.0.0"
+edition = "2021"
+description = "Rust kernels for voxelkloud's LOD scheduler: frustum extraction, AABB classification and screen-space-error priority, over the wasm linear memory."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# No wasm-bindgen. These kernels are pure f64 functions over linear memory, so
+# the JS side reads and writes fixed offsets through a Float64Array view and
+# needs no generated glue — a smaller binary and one fewer build tool.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
