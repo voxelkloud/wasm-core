@@ -158,6 +158,10 @@ describe.skipIf(!HAS_WASM)("select_children agrees with the TypeScript oracle", 
       k.params[Param.ViewportHeightPx] = vp;
       k.params[Param.OrthoProjFactor] = 0;
       k.params[Param.Orthographic] = 0;
+      // Explicit, not inherited: `k` is shared across this file, so a later
+      // per-child test must not be able to reach back and change what this one
+      // is measuring.
+      k.params[Param.PerChild] = 0;
 
       const mask = 0xff;
       const survived = k.selectChildren(mask, false);
@@ -235,5 +239,135 @@ describe.skipIf(!HAS_WASM)("select_children agrees with the TypeScript oracle", 
     const expected = 2 * ((0.5 * 1080) / (0.577 * 5));
     expect(k.results[1]).toBeCloseTo(expected, 9);
     expect(Number.isFinite(k.results[1]!)).toBe(true);
+  });
+});
+
+describe.skipIf(!HAS_WASM)("select_children: the per-child block (A3)", () => {
+  const camX = 637_000;
+  const camY = 851_000;
+  const camZ = 900;
+  const nearFloor = 5;
+  const slope = Math.tan((60 * Math.PI) / 180 / 2);
+  const vp = 2160;
+
+  /** Eight boxes near the cloud centre, all comfortably inside the frustum. */
+  function eightBoxes(rnd: () => number): number[] {
+    const boxes: number[] = [];
+    for (let c = 0; c < 8; c++) {
+      const cx = 637_000 + (rnd() - 0.5) * 1500;
+      const cy = 851_000 + (rnd() - 0.5) * 1500;
+      const cz = 600 + (rnd() - 0.5) * 400;
+      const h = 20 + rnd() * 120;
+      boxes.push(cx - h, cy - h, cz - h, cx + h, cy + h, cz + h);
+    }
+    return boxes;
+  }
+
+  function writeCamera(): void {
+    k.params[Param.CamX] = camX;
+    k.params[Param.CamY] = camY;
+    k.params[Param.CamZ] = camZ;
+    k.params[Param.NearFloor] = nearFloor;
+    k.params[Param.Slope] = slope;
+    k.params[Param.ViewportHeightPx] = vp;
+    k.params[Param.OrthoProjFactor] = 0;
+    k.params[Param.Orthographic] = 0;
+  }
+
+  it("scores each child from ITS OWN error and radius", () => {
+    const clip = autzenClip();
+    const planes = extractFrustumPlanes(
+      clip,
+      new Float64Array(24),
+      "minus-one-to-one",
+      false,
+    );
+    k.planes.set(planes);
+    const rnd = rng(20260823);
+    let compared = 0;
+
+    for (let batch = 0; batch < 200; batch++) {
+      const boxes = eightBoxes(rnd);
+      k.boxes.set(boxes);
+      writeCamera();
+      // Deliberately absurd closed-form values: if the kernel reads them while
+      // PerChild is set, every key below is wrong by orders of magnitude.
+      k.params[Param.RadiusChild] = 1e9;
+      k.params[Param.ErrorChild] = 1e9;
+      k.params[Param.PerChild] = 1;
+
+      // Eight DISTINCT pairs, so a kernel that broadcast slot 0 to all eight —
+      // the obvious way to get this wrong — fails.
+      const err: number[] = [];
+      const rad: number[] = [];
+      for (let c = 0; c < 8; c++) {
+        err.push(0.5 + c * 1.25);
+        rad.push(80 + c * 37);
+        k.child[c] = err[c]!;
+        k.child[8 + c] = rad[c]!;
+      }
+
+      const survived = k.selectChildren(0xff, false);
+
+      for (let c = 0; c < 8; c++) {
+        const o = c * 6;
+        const want = classifyAabb(
+          planes,
+          boxes[o]!, boxes[o + 1]!, boxes[o + 2]!,
+          boxes[o + 3]!, boxes[o + 4]!, boxes[o + 5]!,
+        );
+        expect(k.results[c * 2]).toBe(want);
+        expect(((survived >> c) & 1) === 1).toBe(want !== Containment.Outside);
+        if (want !== Containment.Outside) {
+          const dx = camX - (boxes[o]! + boxes[o + 3]!) * 0.5;
+          const dy = camY - (boxes[o + 1]! + boxes[o + 4]!) * 0.5;
+          const dz = camZ - (boxes[o + 2]! + boxes[o + 5]!) * 0.5;
+          const d = Math.max(Math.hypot(dx, dy, dz) - rad[c]!, nearFloor);
+          expect(k.results[c * 2 + 1]).toBeCloseTo(
+            err[c]! * ((0.5 * vp) / (slope * d)),
+            9,
+          );
+        }
+        compared++;
+      }
+    }
+    k.params[Param.PerChild] = 0;
+    expect(compared).toBe(1600);
+  });
+
+  it("ignores the per-child block entirely when the flag is clear", () => {
+    // The cost argument for the whole design: an octree writes two scalars and
+    // never touches `child`. Stale bytes left there by an earlier frame — or by
+    // the test above — must not reach the result.
+    const clip = autzenClip();
+    const planes = extractFrustumPlanes(
+      clip,
+      new Float64Array(24),
+      "minus-one-to-one",
+      false,
+    );
+    k.planes.set(planes);
+    const boxes = eightBoxes(rng(7));
+    k.boxes.set(boxes);
+    writeCamera();
+
+    const rChild = 250;
+    const eChild = 4.55;
+    k.params[Param.RadiusChild] = rChild;
+    k.params[Param.ErrorChild] = eChild;
+    k.params[Param.PerChild] = 0;
+    for (let c = 0; c < 16; c++) k.child[c] = -12345;
+
+    const survived = k.selectChildren(0xff, false);
+
+    for (let c = 0; c < 8; c++) {
+      if (((survived >> c) & 1) === 0) continue;
+      const o = c * 6;
+      const dx = camX - (boxes[o]! + boxes[o + 3]!) * 0.5;
+      const dy = camY - (boxes[o + 1]! + boxes[o + 4]!) * 0.5;
+      const dz = camZ - (boxes[o + 2]! + boxes[o + 5]!) * 0.5;
+      const d = Math.max(Math.hypot(dx, dy, dz) - rChild, nearFloor);
+      expect(k.results[c * 2 + 1]).toBeCloseTo(eChild * ((0.5 * vp) / (slope * d)), 9);
+    }
   });
 });

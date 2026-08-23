@@ -40,8 +40,23 @@ static mut RESULTS: [f64; 16] = [0.0; 16];
 
 /// Scalars the child loop needs, in one block so JS writes them in one go:
 /// `[camX, camY, camZ, rChild, spChild, nearFloor, slope, halfViewportPx,
-///   orthoProjFactor, orthographic]`.
-static mut PARAMS: [f64; 10] = [0.0; 10];
+///   orthoProjFactor, orthographic, perChild]`.
+///
+/// `rChild`/`spChild` are the CLOSED-FORM values, one pair for all eight
+/// children, and are what every octree format uses. `perChild` switches the
+/// child loop to read {@link CHILD} instead.
+static mut PARAMS: [f64; 11] = [0.0; 11];
+
+/// Per-child LOD quantities: `[geometricError; 8]` then `[boundingRadius; 8]`.
+///
+/// Read ONLY when `PARAMS[10]` is non-zero. It exists for formats whose LOD
+/// quantities are not a closed form of the level — a 3D Tiles tileset, where
+/// eight siblings can carry eight different geometric errors.
+///
+/// Kept as a SEPARATE block rather than folded into the closed-form slots so
+/// that the common case still writes two scalars per admitted node instead of
+/// sixteen. An octree pays nothing for this generality.
+static mut CHILD: [f64; 16] = [0.0; 16];
 
 const OUTSIDE: f64 = 0.0;
 const INTERSECTING: f64 = 1.0;
@@ -65,6 +80,11 @@ pub extern "C" fn results_ptr() -> *const f64 {
 #[no_mangle]
 pub extern "C" fn params_ptr() -> *const f64 {
     &raw const PARAMS as *const f64
+}
+
+#[no_mangle]
+pub extern "C" fn child_ptr() -> *const f64 {
+    &raw const CHILD as *const f64
 }
 
 /// Classify one box against the six planes.
@@ -118,6 +138,10 @@ fn classify(planes: &[f64; 24], b: &[f64], o: usize) -> f64 {
 /// `BOXES` holds a real child. `parent_inside` skips the plane test entirely,
 /// because a box fully inside the frustum has every descendant inside too.
 ///
+/// The LOD quantities come from `PARAMS[3]/[4]` when `PARAMS[10]` is zero — one
+/// radius and one geometric error shared by all eight children, which is what a
+/// regular octree has — and from `CHILD` otherwise.
+///
 /// Writes `[containment, key]` per slot into `RESULTS` and returns the bitmask
 /// of children that were NOT culled. The caller still owns the heap and the
 /// target-spacing cut: this kernel decides visibility and priority, nothing
@@ -127,18 +151,22 @@ pub extern "C" fn select_children(mask: u32, parent_inside: u32) -> u32 {
     let planes = unsafe { &*(&raw const PLANES) };
     let boxes = unsafe { &*(&raw const BOXES) };
     let params = unsafe { &*(&raw const PARAMS) };
+    let child = unsafe { &*(&raw const CHILD) };
     let results = unsafe { &mut *(&raw mut RESULTS) };
 
     let cam_x = params[0];
     let cam_y = params[1];
     let cam_z = params[2];
-    let r_child = params[3];
-    let sp_child = params[4];
+    let r_level = params[3];
+    let e_level = params[4];
     let near_floor = params[5];
     let slope = params[6];
     let half_vp = params[7];
     let ortho_pf = params[8];
     let orthographic = params[9] != 0.0;
+    // Constant for the whole frame, so this is a perfectly predicted branch
+    // rather than a per-child cost.
+    let per_child = params[10] != 0.0;
 
     let mut out_mask = 0u32;
 
@@ -162,6 +190,12 @@ pub extern "C" fn select_children(mask: u32, parent_inside: u32) -> u32 {
             continue;
         }
 
+        let (e_child, r_child) = if per_child {
+            (child[c], child[8 + c])
+        } else {
+            (e_level, r_level)
+        };
+
         let dx = cam_x - (boxes[o] + boxes[o + 3]) * 0.5;
         let dy = cam_y - (boxes[o + 1] + boxes[o + 4]) * 0.5;
         let dz = cam_z - (boxes[o + 2] + boxes[o + 5]) * 0.5;
@@ -180,7 +214,7 @@ pub extern "C" fn select_children(mask: u32, parent_inside: u32) -> u32 {
         };
 
         results[c * 2] = containment;
-        results[c * 2 + 1] = sp_child * pf;
+        results[c * 2 + 1] = e_child * pf;
         out_mask |= 1 << c;
         c += 1;
     }

@@ -17,13 +17,23 @@ export const Param = {
   CamX: 0,
   CamY: 1,
   CamZ: 2,
+  /** Closed-form radius shared by all eight children. Ignored when `PerChild`. */
   RadiusChild: 3,
+  /** Closed-form geometric error shared by all eight. Ignored when `PerChild`. */
+  ErrorChild: 4,
+  /** @deprecated Renamed to {@link Param.ErrorChild}. */
   SpacingChild: 4,
   NearFloor: 5,
   Slope: 6,
   ViewportHeightPx: 7,
   OrthoProjFactor: 8,
   Orthographic: 9,
+  /**
+   * Non-zero switches the child loop from the closed-form pair to
+   * {@link WasmKernels.child}. Constant for a whole frame, so it is written once
+   * alongside the camera scalars and never per node.
+   */
+  PerChild: 10,
 } as const;
 
 export interface WasmKernels {
@@ -39,8 +49,17 @@ export interface WasmKernels {
   readonly boxes: Float64Array;
   /** 16 f64: `[containment, key]` per child slot. */
   readonly results: Float64Array;
-  /** 10 f64, indexed by {@link Param}. */
+  /** 11 f64, indexed by {@link Param}. */
   readonly params: Float64Array;
+  /**
+   * 16 f64: `[geometricError; 8]` then `[boundingRadius; 8]`.
+   *
+   * Read only when `params[Param.PerChild]` is non-zero. Formats whose LOD
+   * quantities ARE a closed form of the level — every octree, so Potree v2,
+   * COPC and EPT — leave this untouched and write two scalars per admitted node
+   * instead of sixteen.
+   */
+  readonly child: Float64Array;
 
   /**
    * Cull and score every child of one popped node.
@@ -61,6 +80,7 @@ interface Exports {
   boxes_ptr(): number;
   results_ptr(): number;
   params_ptr(): number;
+  child_ptr(): number;
   select_children(mask: number, parentInside: number): number;
   extract_planes(zeroToOne: number, reversed: number): void;
 }
@@ -87,13 +107,15 @@ export async function loadWasmKernels(
   const planes = new Float64Array(buffer, e.planes_ptr(), 24);
   const boxes = new Float64Array(buffer, e.boxes_ptr(), 48);
   const results = new Float64Array(buffer, e.results_ptr(), 16);
-  const params = new Float64Array(buffer, e.params_ptr(), 10);
+  const params = new Float64Array(buffer, e.params_ptr(), 11);
+  const child = new Float64Array(buffer, e.child_ptr(), 16);
 
   return {
     planes,
     boxes,
     results,
     params,
+    child,
     selectChildren: (mask, parentInside) =>
       e.select_children(mask, parentInside ? 1 : 0),
     extractPlanes: (zeroToOne, reversed) =>

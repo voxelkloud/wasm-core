@@ -66,7 +66,7 @@ it.skipIf(!CAN_RUN)("wasm kernels against the TypeScript oracle", async () => {
       const cam = {clipFromAbs:clip,camX:px,camY:py,camZ:pz,slope:Math.tan((60*Math.PI/180)/2),
         viewportHeightPx:2160,orthographic:false,orthoProjFactor:0,nearFloor:near,
         depthRange:"minus-one-to-one" as const,reversedDepth:false};
-      const o = resolveLodOptions({targetPixelSpacing:0.35,pointBudget:budget,maxNodes:200_000});
+      const o = resolveLodOptions({targetScreenError:0.35,pointBudget:budget,maxNodes:200_000});
 
       selectVisible(h,cam,o,sA,outA);
       selectVisible(h,cam,o,sB,outB,k);
@@ -78,13 +78,26 @@ it.skipIf(!CAN_RUN)("wasm kernels against the TypeScript oracle", async () => {
       // being judged.
       const WARM=40, N=25, REPS=9;
       for(let i=0;i<WARM;i++){selectVisible(h,cam,o,sA,outA);selectVisible(h,cam,o,sB,outB,k);}
-      const med=(f:()=>void)=>{
-        const xs:number[]=[];
-        for(let r=0;r<REPS;r++){const t0=performance.now();for(let i=0;i<N;i++)f();xs.push((performance.now()-t0)/N);}
-        xs.sort((a,b)=>a-b); return xs[(xs.length-1)>>1]!;
-      };
-      const ts=med(()=>selectVisible(h,cam,o,sA,outA));
-      const ws=med(()=>selectVisible(h,cam,o,sB,outB,k));
+      // INTERLEAVED, and with the order alternating per rep.
+      //
+      // Measuring all nine TS batches and THEN all nine wasm batches puts the
+      // two series in different thermal windows, and any drift across the ~450
+      // selections between them is charged entirely to whichever ran second.
+      // That is not a small effect at this granularity: with the sequential
+      // form, one row read 0.93x, 1.19x, 1.12x and 1.10x across four
+      // invocations of an unchanged binary. Interleaving makes both series see
+      // the same conditions; alternating removes the residual bias of one
+      // always being measured first within a rep.
+      const batch=(f:()=>void)=>{const t0=performance.now();for(let i=0;i<N;i++)f();return (performance.now()-t0)/N;};
+      const runTs=()=>batch(()=>selectVisible(h,cam,o,sA,outA));
+      const runWs=()=>batch(()=>selectVisible(h,cam,o,sB,outB,k));
+      const tsXs:number[]=[], wsXs:number[]=[];
+      for(let r=0;r<REPS;r++){
+        if(r%2===0){tsXs.push(runTs());wsXs.push(runWs());}
+        else{wsXs.push(runWs());tsXs.push(runTs());}
+      }
+      const med=(xs:number[])=>{xs.sort((a,b)=>a-b); return xs[(xs.length-1)>>1]!;};
+      const ts=med(tsXs), ws=med(wsXs);
 
       console.log(dir.padEnd(12), (budget/1e6+"M").padStart(7), String(outA.count).padStart(7),
         outA.points.toLocaleString().padStart(12), ts.toFixed(3).padStart(9), ws.toFixed(3).padStart(9),

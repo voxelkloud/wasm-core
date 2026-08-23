@@ -1,6 +1,6 @@
 # @voxelkloud/wasm-core
 
-Rust LOD kernels for [voxelkloud](https://github.com/voxelkloud/voxelkloud), as raw wasm over linear
+Rust LOD kernels for [voxelkloud](../../README.md), as raw wasm over linear
 memory. 3,603 bytes, 1,467 gzipped.
 
 ```sh
