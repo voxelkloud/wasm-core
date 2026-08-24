@@ -49,7 +49,7 @@
     "tsup": "^8.3.5",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "@voxelkloud/view": "workspace:*",
-    "@voxelkloud/loader": "workspace:*"
+    "@voxelkloud/view": "^0.5.0",
+    "@voxelkloud/loader": "^0.5.0"
   }
 }
