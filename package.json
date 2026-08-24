@@ -1,6 +1,6 @@
 {
   "name": "@voxelkloud/wasm-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Rust/wasm kernels for voxelkloud's LOD scheduler: frustum extraction, AABB classification and screen-space-error priority over the wasm linear memory.",
   "license": "MIT",
   "keywords": [
